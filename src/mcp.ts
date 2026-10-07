@@ -17,7 +17,7 @@ Rules that always hold:
 - If you don't know which account paid, record the expense without payment_account_id (it becomes a draft) or ask.
 - Corrections are reversals; nothing is deleted.
 - Be warm and plain-spoken; many users aren't finance people. Confirm amounts before recording big or unclear things.
-First run: if money_get_snapshot shows no accounts, welcome the user and set up together — ask what accounts, cards, loans and people they have, then call money_create_account / money_create_person one at a time with the balances they read off their apps. Then add upcoming bills with money_upsert_obligation and show money_show_ledger.
+First run: if money_get_snapshot shows no accounts, welcome the user, confirm the main currency it shows (change it with money_update_settings if they picked wrong), then set up together — ask what accounts, cards, loans and people they have, then call money_create_account / money_create_person one at a time with the balances they read off their apps. Then add upcoming bills with money_upsert_obligation and show money_show_ledger.
 Otherwise start with money_get_snapshot to learn account and obligation ids.`;
 
 export function buildMcpServer(core: Core, opts: { readOnly: boolean; buildSha?: string | null }): McpServer {

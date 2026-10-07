@@ -1753,6 +1753,61 @@ export class Core {
     });
   }
 
+  /**
+   * Change the ledger's own settings: the user's name, timezone, or main
+   * currency. The main currency can only change while no account or entry
+   * uses the old one — totals are never converted.
+   */
+  async updateSettings(a: { idempotency_key: string; name?: string; currency?: string; timezone?: string }): Promise<MutationResult> {
+    return this.mutate(a.idempotency_key, "money_update_settings", async () => {
+      const mine = await this.me();
+      const stmts: Stmt[] = [];
+      const changes: string[] = [];
+      const meta = (k: string, v: string) => ({ sql: "INSERT INTO schema_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params: [k, v] });
+      if (a.name !== undefined) {
+        const name = requireString(a.name, "name").trim();
+        if (name.length > 60) throw new LedgerError("Keep the name under 60 characters.");
+        stmts.push({ sql: "UPDATE owners SET name = ? WHERE id = ?", params: [name, mine] }, meta("report_eyebrow", `${name}'s ledger`));
+        changes.push(`name → ${name}`);
+      }
+      if (a.timezone !== undefined) {
+        try {
+          new Intl.DateTimeFormat("en-US", { timeZone: a.timezone });
+        } catch {
+          throw new LedgerError(`"${a.timezone}" isn't a timezone. Use a name like America/New_York or Europe/Madrid.`);
+        }
+        stmts.push(meta("timezone", a.timezone));
+        changes.push(`timezone → ${a.timezone}`);
+      }
+      if (a.currency !== undefined && a.currency.toUpperCase() !== this.base) {
+        const cur = a.currency.toUpperCase();
+        if (!isCurrencyCode(cur)) throw new LedgerError(`currency must be a 3-letter ISO code like USD, EUR or MXN (got "${a.currency}").`);
+        const used = await this.db.get<{ n: number }>(
+          `SELECT (SELECT count(*) FROM accounts WHERE currency = ? AND account_type IN ('asset','liability','receivable','payable'))
+                + (SELECT count(*) FROM obligations WHERE currency = ?) + (SELECT count(*) FROM reservations WHERE currency = ?) AS n`,
+          [this.base, this.base, this.base],
+        );
+        if (used?.n) {
+          throw new LedgerError(
+            `Can't switch the main currency from ${this.base} to ${cur}: ${used.n} account${used.n === 1 ? "" : "s"}/plan${used.n === 1 ? "" : "s"} already use ${this.base}, and Money Truths never converts amounts. Add ${cur} accounts with currency: "${cur}" instead (they show separately), or start a fresh ledger.`,
+          );
+        }
+        stmts.push(meta("base_currency", cur));
+        changes.push(`main currency ${this.base} → ${cur}`);
+      }
+      if (!stmts.length) throw new LedgerError("Pass name, currency and/or timezone to change.");
+      return {
+        action: "money_update_settings",
+        summary: `Settings updated: ${changes.join(", ")}. Balances unchanged.`,
+        stmts,
+        transactionId: null,
+        accounts: [],
+        entity: { type: "settings", id: "ledger" },
+        payload: { ...a, before: { currency: this.base, timezone: this.tz } },
+      };
+    });
+  }
+
   /** `base`, or `base_2`, `base_3`… — the first id not used in `table`. */
   private async freeId(table: "owners" | "accounts", base: string): Promise<string> {
     for (let i = 1; ; i++) {
@@ -2040,6 +2095,7 @@ export class Core {
       as_of: asOf,
       generated_at: this.now(),
       currency: this.base,
+      timezone: this.tz,
       me: {
         id: await this.me(),
         liquid,

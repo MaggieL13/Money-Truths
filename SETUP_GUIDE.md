@@ -37,6 +37,8 @@ Menus change over time and custom connectors depend on the user's plan. If what 
 
 When `money_get_snapshot` shows no accounts, welcome them and set up together. Ask one thing at a time:
 
+0. **Check the basics:** the snapshot shows the main `currency` and `timezone` they picked on the setup page. Confirm them ("Your ledger is in US dollars — right?"). If either is wrong, fix it with `money_update_settings` before adding accounts (the main currency can't change once accounts use it).
+
 1. **Everyday money:** "Which bank accounts, cash, and apps like PayPal or Venmo do you use? What does each one show right now?"
    → `money_create_account` with type `bank`, `cash`, `wallet` or `savings` and `balance_minor`.
 2. **Credit cards:** current balance owed, limit, minimum payment and due date.

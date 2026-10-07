@@ -211,3 +211,18 @@ test("S12. the code has no built-in timezone or currency", async () => {
     assert.ok(!/[₲€£¥]\$\{|"[₲€£¥]"/.test(text), `${f} hardcodes a currency symbol`);
   }
 });
+
+test("S13. settings: rename and re-zone any time; switch currency only before anything uses it", async () => {
+  const { db, core } = await setUp("USD");
+  const r = await core.updateSettings({ idempotency_key: "s1", currency: "pyg", name: "Rob", timezone: "America/Asuncion" });
+  assert.match(r.summary, /USD → PYG/);
+  assert.deepEqual(await readSettings(db), { timezone: "America/Asuncion", currency: "PYG", ownerName: "Rob" });
+  await assert.rejects(core.updateSettings({ idempotency_key: "s2", timezone: "Nowhere/Land" }), /isn't a timezone/);
+  await assert.rejects(core.updateSettings({ idempotency_key: "s3" }), /Pass name/);
+
+  const pyg = new Core(db, { timezone: "America/Asuncion", baseCurrency: "PYG", now: () => new Date(NOW) });
+  await pyg.createAccount({ idempotency_key: "a", name: "Bank", type: "bank", balance_minor: 500_000 });
+  assert.equal((await pyg.snapshot()).me.liquid, 500_000);
+  await assert.rejects(pyg.updateSettings({ idempotency_key: "s4", currency: "USD" }), /never converts/);
+  assert.equal((await readSettings(db))!.currency, "PYG");
+});

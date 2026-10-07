@@ -129,6 +129,15 @@ export const TOOLS: ToolDef[] = [
     run: (c, a) => c.createAccount(a),
   }),
 
+  def({
+    name: "money_update_settings",
+    mutating: true,
+    description:
+      "Change the ledger's settings: the user's name, timezone (IANA, e.g. America/Asuncion), or main currency (ISO code). The main currency was picked on the setup page and is shown as `currency` in money_get_snapshot — confirm it with the user on first run. It can only change while nothing uses the old currency yet; amounts are never converted.",
+    input: { idempotency_key: key, name: z.string().optional(), currency: currency.optional(), timezone: z.string().optional() },
+    run: (c, a) => c.updateSettings(a),
+  }),
+
   // ---- writes ---------------------------------------------------------------------
   def({
     name: "money_record_income",
