@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "money-truths",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "money-truths",
+      // Placeholder: the Deploy to Cloudflare button creates your own database
+      // and fills in its id. Deploying by hand? `npx wrangler d1 create money-truths`
+      // and paste the id here.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+  // Secret (never in this file): SETUP_CODE — a passphrase that unlocks /setup.
+  // The Deploy button asks for it; locally it lives in .dev.vars.
+}
