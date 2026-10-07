@@ -226,3 +226,20 @@ test("S13. settings: rename and re-zone any time; switch currency only before an
   await assert.rejects(pyg.updateSettings({ idempotency_key: "s4", currency: "USD" }), /never converts/);
   assert.equal((await readSettings(db))!.currency, "PYG");
 });
+
+test("S14. an empty ledger tells the AI how to start", async () => {
+  const { core } = await setUp("USD");
+  const s = await core.snapshot();
+  assert.match(String(s.getting_started), /brand new and empty/);
+  assert.match(String(s.getting_started), /USD/);
+  await assert.rejects(core.recordIncome({ idempotency_key: "i", occurred_at: "2026-10-01T10:00", amount_minor: 2_000, currency: "USD", destination_account_id: "asset_checking", source: "Work" }), /no accounts yet/);
+  const { loadView } = await import("../src/core/report-data.ts");
+  const { cardData, cardText } = await import("../src/card.ts");
+  let d = cardData(await loadView(core));
+  assert.equal(d.empty, true);
+  assert.match(cardText(d), /getting_started/);
+  await core.createAccount({ idempotency_key: "a", name: "Checking", type: "bank", balance_minor: 0 });
+  assert.equal((await core.snapshot()).getting_started, undefined, "the guide goes away once something exists");
+  d = cardData(await loadView(core));
+  assert.equal(d.empty, false, "a $0 account still counts as set up");
+});

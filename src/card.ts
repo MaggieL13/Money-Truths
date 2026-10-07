@@ -46,6 +46,8 @@ export interface CardData {
   attention: number;
   unresolved: number;
   late: number;
+  /** Nothing set up yet. */
+  empty: boolean;
 }
 
 export function cardData(v: MoneyTruthsView): CardData {
@@ -85,6 +87,7 @@ export function cardData(v: MoneyTruthsView): CardData {
     attention: v.issues.length,
     unresolved: v.reconciliation.length,
     late: v.expected.filter((e) => e.overdue).length,
+    empty: v.accounts.length === 0 && v.separate.length === 0 && v.cards.length === 0 && v.loans.length === 0 && v.obligations.length === 0,
   };
 }
 
@@ -235,6 +238,9 @@ export function debtsText(d: DebtsData): string {
 /** Plain-text version for the model (and for hosts without MCP Apps). */
 export function cardText(d: CardData): string {
   const g = (n: number) => fmt(n, d.currency);
+  if (d.empty) {
+    return `Money Truths — ${d.monthLabel}: empty so far. Nothing is set up yet; call money_get_snapshot and follow its getting_started steps with the user.`;
+  }
   return [
     `Money Truths — ${d.monthLabel}, as of ${d.asOf}`,
     `Liquid ${g(d.liquid)} · free ${g(d.free)} (${g(d.reserved)} reserved)`,
@@ -366,6 +372,7 @@ li.paid{opacity:.55}
       '</b></div><div><span>From income</span><b style="color:var(--gold)">' + g(d.wall.gap) + '</b></div></div><div class="meter"><span style="width:' + d.wall.coverPct + '%"></span></div></div>' +
       '<div class="h">Next up</div><ul>' + (next || '<li><span></span><span class="lab">Nothing due</span><span></span></li>') + "</ul>" +
       '<div class="foot">' + pills + "</div>" +
+      (d.empty ? '<div class="wall" style="text-align:center">✨ Nothing here yet. Tell your AI which accounts, cards and bills you have, and it will set them up with you.</div>' : "") +
       '<div class="gen">Generated from canonical Money Truths database · view only · ' + stamp(d) + "</div>";
     finish();
   }

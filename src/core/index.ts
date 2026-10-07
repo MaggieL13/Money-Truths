@@ -157,6 +157,11 @@ export class Core {
       const known = await this.db.all<{ id: string }>(
         "SELECT id FROM accounts WHERE active = 1 AND account_type IN ('asset','liability','receivable','payable') ORDER BY id",
       );
+      if (!known.length) {
+        throw new LedgerError(
+          `Unknown account "${id}": this ledger has no accounts yet. Set it up first — ask the user which accounts, cards and loans they have and create each with money_create_account (call money_get_snapshot for the getting_started steps).`,
+        );
+      }
       throw new LedgerError(`Unknown account "${id}". Known accounts: ${known.map((k) => k.id).join(", ")}.`);
     }
     return row;
@@ -2091,7 +2096,9 @@ export class Core {
     const open = (b: AccountBalance) => b.active === 1;
     const recurring = await this.db.all("SELECT * FROM recurring_rules ORDER BY active DESC, kind, name");
     const shape = (b: AccountBalance) => ({ id: b.id, name: b.name, owner_id: b.owner_id, currency: b.currency, balance_minor: b.balance_minor, balance_known: !!b.checkpoint_as_of || accFields.get(b.id)?.balance_unknown !== true, checkpoint_as_of: b.checkpoint_as_of, institution: b.institution, fields: accFields.get(b.id) ?? {} });
+    const hasAccounts = balances.some((b) => b.account_type !== "income" && b.account_type !== "expense");
     return {
+      ...(hasAccounts ? {} : { getting_started: this.gettingStarted() }),
       as_of: asOf,
       generated_at: this.now(),
       currency: this.base,
@@ -2116,6 +2123,21 @@ export class Core {
       drafts,
       recurring_rules: recurring,
     };
+  }
+
+  /** First-run script for the assistant, returned while the ledger has no accounts. */
+  gettingStarted(): string {
+    return [
+      "This ledger is brand new and empty. Before recording anything, set it up with the user, warmly and one question at a time:",
+      `1. Confirm the basics: main currency ${this.base} and timezone ${this.tz} (picked on the setup page). If either is wrong, fix it with money_update_settings now.`,
+      "2. Everyday money: which bank accounts, cash and payment apps they use, and what each shows right now → money_create_account (type bank/cash/wallet/savings, balance_minor).",
+      "3. Credit cards: amount owed, limit, next minimum and due date → money_create_account type credit_card, then money_upsert_obligation kind card_minimum.",
+      "4. Loans and personal debts: what's left (or unknown), monthly payment, payments made/total → type loan or personal_debt, then the next payment with money_upsert_obligation kind loan.",
+      "5. People they share costs with or who owe them → money_create_person, and type owed_to_me for money already owed.",
+      "6. Regular bills and subscriptions → money_upsert_obligation / money_upsert_recurring_rule.",
+      "7. Show the result with money_show_ledger.",
+      "Ask for real numbers from their apps; never guess. Amounts are integers in minor units (cents for 2-decimal currencies).",
+    ].join("\n");
   }
 
   async upcomingObligations(a: { from_date: string; to_date: string; status?: string }) {
