@@ -293,7 +293,7 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "money_record_batch",
     mutating: true,
-    description: "Several movements, all-or-nothing. items: [{tool, args}] using income, expense, card purchase, split purchase, transfer, reimbursement, pass-through or obligation-paid tools. Item keys are derived from the batch key.",
+    description: "Several movements, all-or-nothing. items: [{tool, args}] using income, expense, card purchase, split purchase, transfer, reimbursement, pass-through or obligation-paid tools. Item keys are derived from the batch key. Not for setup: call money_create_person / money_create_account / money_upsert_obligation one at a time.",
     input: { idempotency_key: key, items: z.array(z.object({ tool: z.string(), args: z.record(z.string(), z.unknown()) })) },
     run: (c, a) => c.recordBatch(a as never),
   }),

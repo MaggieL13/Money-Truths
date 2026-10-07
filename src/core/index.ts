@@ -1511,7 +1511,7 @@ export class Core {
       case "money_mark_obligation_paid":
         return this.planObligationPaid(args, key);
       default:
-        throw new LedgerError(`${tool} can't be batched. Batchable: income, expense, card purchase, split purchase, transfer, reimbursement, pass-through, obligation paid.`);
+        throw new LedgerError(`${tool} can't be batched. Batchable: income, expense, card purchase, split purchase, transfer, reimbursement, pass-through, obligation paid. Setup tools (money_create_person, money_create_account, money_upsert_obligation…) are called one at a time, in order. Nothing was recorded.`);
     }
   }
 
