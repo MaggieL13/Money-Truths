@@ -443,7 +443,7 @@ export class Core {
 
   private async instant(input: unknown, field: string, affected: string[], warnings: string[]): Promise<string> {
     if (typeof input !== "string" || !input) throw new LedgerError(`${field} is required (ISO date or datetime).`);
-    const inst = toInstant(input, this.tz);
+    const inst = toInstant(input, this.tz, this.now());
     if (inst.iso > this.now()) {
       warnings.push(`Dated in the future (${localDate(inst.iso, this.tz)}): it won't show in balances until then.`);
     }
@@ -544,7 +544,7 @@ export class Core {
     // Test 24: unknown funding account → draft, never a guess.
     if (!a.payment_account_id) {
       const id = newId("txn");
-      const occurredAt = toInstant(requireString(a.occurred_at, "occurred_at"), this.tz).iso;
+      const occurredAt = toInstant(requireString(a.occurred_at, "occurred_at"), this.tz, this.now()).iso;
       return {
         action: "money_record_expense",
         summary: `Saved "${a.description}" (${money(amount, a.currency)}) as a DRAFT — no balance changed.`,
@@ -1028,7 +1028,7 @@ export class Core {
     if (!acc.active) throw new LedgerError(`${acc.name} is closed. Reopen it with money_update_account (active: true) first.`);
     if (!Number.isInteger(a.reported_balance_minor)) throw new LedgerError("reported_balance_minor must be an integer.");
     const sourceKind = requireString(a.source_kind, "source_kind");
-    const asOf = toInstant(requireString(a.as_of, "as_of"), this.tz).iso;
+    const asOf = toInstant(requireString(a.as_of, "as_of"), this.tz, this.now()).iso;
     const prior = await this.db.get<{ n: number }>("SELECT count(*) AS n FROM balance_checkpoints WHERE account_id = ? AND accepted = 1 AND as_of <= ?", [acc.id, asOf]);
     const priorPostings = await this.db.get<{ n: number }>(
       "SELECT count(*) AS n FROM postings p JOIN transactions t ON t.id = p.transaction_id WHERE p.account_id = ? AND t.status <> 'draft' AND t.occurred_at <= ?",
@@ -1089,7 +1089,7 @@ export class Core {
       plan.stmts.push({
         sql: `INSERT INTO card_snapshots (card_account_id, as_of, debt_minor, available_credit_minor, credit_limit_minor, minimum_minor, minimum_due_date, statement_close_date, source_ref, created_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        params: [card.id, toInstant(a.as_of, this.tz).iso, a.debt_minor, a.available_credit_minor ?? null, limit, a.minimum_minor ?? null, a.minimum_due_date ?? null, a.statement_close_date ?? null, a.source_ref ?? null, this.now()],
+        params: [card.id, plan.occurredAt!, a.debt_minor, a.available_credit_minor ?? null, limit, a.minimum_minor ?? null, a.minimum_due_date ?? null, a.statement_close_date ?? null, a.source_ref ?? null, this.now()],
       });
       plan.summary = `${card.name} snapshot: debt ${money(a.debt_minor, card.currency)}${a.available_credit_minor != null ? `, ${money(a.available_credit_minor, card.currency)} available` : ""}${a.minimum_minor != null ? `, minimum ${money(a.minimum_minor, card.currency)}${a.minimum_due_date ? ` due ${a.minimum_due_date}` : ""}` : ""}.`;
       plan.payload = a;
@@ -1713,7 +1713,7 @@ export class Core {
         });
       }
 
-      const asOf = toInstant(a.as_of ?? this.now(), this.tz).iso;
+      const asOf = toInstant(a.as_of ?? this.now(), this.tz, this.now()).iso;
       const known = a.balance_minor != null;
       if (known) {
         if (kind.account_type !== "asset" && a.balance_minor! < 0) throw new LedgerError("For debts and money owed to you, balance_minor is the positive amount owed.");
@@ -1944,7 +1944,16 @@ export class Core {
     });
   }
 
-  async upsertRecurringRule(a: {
+  /** Save a recurring rule, then bring its upcoming due dates onto the calendar. */
+  async upsertRecurringRule(a: Parameters<Core["saveRecurringRule"]>[0]): Promise<MutationResult> {
+    const res = await this.saveRecurringRule(a);
+    if (res.replayed) return res;
+    const s = await this.syncRecurring();
+    const bits = [s.created && `${s.created} upcoming due date${s.created === 1 ? "" : "s"} added to the calendar`, s.updated && `${s.updated} updated`, s.cancelled && `${s.cancelled} future unpaid one${s.cancelled === 1 ? "" : "s"} cancelled`].filter(Boolean);
+    return bits.length ? { ...res, summary: `${res.summary} ${bits.join(", ")}.` } : res;
+  }
+
+  private async saveRecurringRule(a: {
     idempotency_key: string;
     rule_id?: string | null;
     name?: string;
@@ -1999,6 +2008,75 @@ export class Core {
         payload: { ...a, before: existing },
       };
     });
+  }
+
+  /**
+   * Put the upcoming dates of recurring bills on the calendar as obligations,
+   * through the end of next month. Plans only — no money moves until a payment
+   * is recorded. Idempotent: occurrences have deterministic ids, a matching
+   * hand-made obligation (same name and date) is adopted instead of duplicated,
+   * and future unpaid occurrences follow the rule: cancelled when it's paused or
+   * ended, updated when its name or amount changes. Runs after every recurring
+   * rule change and daily from the Worker's cron trigger.
+   */
+  async syncRecurring(): Promise<{ created: number; updated: number; cancelled: number }> {
+    const mine = await this.me().catch(() => null);
+    if (!mine) return { created: 0, updated: 0, cancelled: 0 };
+    const today = this.today();
+    const [y, m] = today.split("-").map(Number);
+    const horizon = ymd(y, m + 2, 0); // last day of next month
+    type RuleRow = { id: string; name: string; owner_id: string; amount_minor: number | null; currency: string; cadence: string; next_due_date: string | null; end_date: string | null; kind: string; active: number; confidence: string; linked_account_id: string | null };
+    const rules = await this.db.all<RuleRow>("SELECT * FROM recurring_rules");
+    const stmts: Stmt[] = [];
+    const counts = { created: 0, updated: 0, cancelled: 0 };
+    const now = this.now();
+
+    for (const r of rules) {
+      const generates = r.owner_id === mine && r.amount_minor != null && !!r.next_due_date && !INCOME_KINDS.test(r.kind);
+      const wanted = new Set(r.active && generates ? occurrences(r.next_due_date!, r.cadence, today, r.end_date && r.end_date < horizon ? r.end_date : horizon) : []);
+
+      // Future unpaid occurrences already on the calendar follow the rule.
+      const existing = await this.db.all<{ id: string; name: string; amount_minor: number; currency: string; due_date: string; status: string; paid_minor: number }>(
+        `SELECT o.id, o.name, o.amount_minor, o.currency, o.due_date, o.status, ${PAID_SQL} AS paid_minor FROM obligations o WHERE o.recurrence_id = ? AND o.due_date >= ?`,
+        [r.id, today],
+      );
+      for (const o of existing) {
+        if (o.status !== "planned" || o.paid_minor > 0) continue;
+        if (!wanted.has(o.due_date)) {
+          stmts.push({ sql: "UPDATE obligations SET status = 'cancelled' WHERE id = ?", params: [o.id] }, statusChange(o.id, "planned", "cancelled", now, `recurring rule "${r.name}" paused, ended or rescheduled`));
+          counts.cancelled++;
+        } else if (generates && (o.name !== r.name || o.amount_minor !== r.amount_minor || o.currency !== r.currency)) {
+          stmts.push({ sql: "UPDATE obligations SET name = ?, amount_minor = ?, currency = ? WHERE id = ?", params: [r.name, r.amount_minor, r.currency, o.id] });
+          counts.updated++;
+        }
+      }
+
+      for (const date of wanted) {
+        if (existing.some((o) => o.due_date === date)) continue;
+        const id = `obl_${r.id}_${date}`;
+        if (await this.db.get("SELECT id FROM obligations WHERE id = ?", [id])) continue; // cancelled by hand earlier: leave it
+        const manual = await this.db.get<{ id: string }>("SELECT id FROM obligations WHERE recurrence_id IS NULL AND lower(name) = lower(?) AND due_date = ?", [r.name, date]);
+        if (manual) {
+          stmts.push({ sql: "UPDATE obligations SET recurrence_id = ? WHERE id = ?", params: [r.id, manual.id] });
+          continue;
+        }
+        stmts.push({
+          sql: `INSERT INTO obligations (id, name, amount_minor, currency, due_date, kind, linked_account_id, status, confidence, recurrence_id, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?)`,
+          params: [id, r.name, r.amount_minor, r.currency, date, obligationKind(r.kind), r.linked_account_id, ["confirmed", "working", "inferred"].includes(r.confidence) ? r.confidence : "working", r.id, `Repeats ${r.cadence}`],
+        });
+        counts.created++;
+      }
+    }
+
+    if (stmts.length) {
+      stmts.push({
+        sql: "INSERT INTO audit_log (id, occurred_at, actor, action, entity_type, entity_id, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        params: [newId("aud"), now, this.actor, "recurring_sync", "recurring_rule", null, JSON.stringify({ ...counts, through: horizon })],
+      });
+      await this.db.batch(stmts);
+    }
+    return counts;
   }
 
   async updateAccount(a: { idempotency_key: string; account_id: string; name?: string; institution?: string | null; last4?: string | null; notes?: string | null; active?: boolean }): Promise<MutationResult> {
@@ -2071,7 +2149,7 @@ export class Core {
   }
 
   async snapshot(a: { as_of?: string; include_others?: boolean; include_expected?: boolean } = {}) {
-    const asOf = a.as_of ? toInstant(a.as_of, this.tz).iso : this.now();
+    const asOf = a.as_of ? toInstant(a.as_of, this.tz, this.now()).iso : this.now();
     const balances = await this.allBalances(asOf);
     const accFields = await this.fields("account");
     const myLiquid = balances.filter(this.isMyLiquid);
@@ -2136,7 +2214,7 @@ export class Core {
       "5. People they share costs with or who owe them → money_create_person, and type owed_to_me for money already owed.",
       "6. Regular bills and subscriptions → money_upsert_obligation / money_upsert_recurring_rule.",
       "7. Show the result with money_show_ledger.",
-      "Ask for real numbers from their apps; never guess. Amounts are integers in minor units (cents for 2-decimal currencies).",
+      "Ask for real numbers from their apps; never guess. Afterwards, for every income or expense, ask which account it came from or went to unless they said — never assume. Dates alone are fine. Amounts are integers in minor units (cents for 2-decimal currencies).",
     ].join("\n");
   }
 
@@ -2322,6 +2400,50 @@ function composeSummary(base: string, before: BalanceReport, after: BalanceRepor
       : "No reconciliation issue.",
   );
   return parts.join(" ");
+}
+
+/** Recurring rules that bring money in never become obligations (expected money isn't a bill). */
+const INCOME_KINDS = /income|salary|wage|pay ?check|payday|inflow|allowance|refund/i;
+
+function obligationKind(ruleKind: string): string {
+  const k = ruleKind.toLowerCase();
+  if (k.includes("subscription")) return "subscription";
+  if (k.includes("loan")) return "loan";
+  if (k.includes("tax")) return "tax";
+  if (k.includes("family")) return "family_debt";
+  if (/utilit|bill|electric|water|gas|internet|phone/.test(k)) return "utility";
+  return "other";
+}
+
+/** YYYY-MM-DD for a (possibly overflowing) year/month/day, via UTC arithmetic. */
+function ymd(y: number, m: number, d: number): string {
+  return new Date(Date.UTC(y, m - 1, d)).toISOString().slice(0, 10);
+}
+
+/**
+ * Due dates of a rule anchored at `anchor`, from `from` through `to`
+ * (inclusive). Monthly-type cadences keep the anchor's day, clamped to short
+ * months (a rule on the 31st falls on Feb 28).
+ */
+export function occurrences(anchor: string, cadence: string, from: string, to: string): string[] {
+  const [ay, am, ad] = anchor.split("-").map(Number);
+  const out: string[] = [];
+  const months = { monthly: 1, quarterly: 3, yearly: 12 }[cadence];
+  const days = { weekly: 7, biweekly: 14 }[cadence];
+  for (let i = 0; i < 1000; i++) {
+    let date: string;
+    if (months) {
+      const last = new Date(Date.UTC(ay, am - 1 + i * months + 1, 0)).getUTCDate();
+      date = ymd(ay, am + i * months, Math.min(ad, last));
+    } else if (days) {
+      date = ymd(ay, am, ad + i * days);
+    } else {
+      break;
+    }
+    if (date > to) break;
+    if (date >= from) out.push(date);
+  }
+  return out;
 }
 
 function statusChange(obligationId: string, from: string, to: string, at: string, reason: string): Stmt {

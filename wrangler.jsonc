@@ -5,6 +5,8 @@
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // Daily: put recurring bills' upcoming due dates on the calendar.
+  "triggers": { "crons": ["0 9 * * *"] },
   "d1_databases": [
     {
       "binding": "DB",

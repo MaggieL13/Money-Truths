@@ -2,7 +2,8 @@
 // SQL string comparison orders them correctly. Inputs may be:
 //   - an ISO datetime with offset or Z  → taken as-is
 //   - an ISO datetime without offset    → wall-clock time in the ledger timezone
-//   - a bare date (YYYY-MM-DD)          → noon in the ledger timezone
+//   - a bare date (YYYY-MM-DD)          → noon in the ledger timezone; for
+//     today, "now" (so "I spent this today" is never in the future)
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const NAIVE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?$/;
@@ -12,9 +13,10 @@ export interface Instant {
   dateOnly: boolean;
 }
 
-export function toInstant(input: string, tz: string): Instant {
+export function toInstant(input: string, tz: string, now?: string): Instant {
   const s = input.trim();
   if (DATE_ONLY.test(s)) {
+    if (now && localDate(now, tz) === s) return { iso: now, dateOnly: true };
     const [y, m, d] = s.split("-").map(Number);
     return { iso: new Date(localToUtc(y, m, d, 12, 0, 0, tz)).toISOString(), dateOnly: true };
   }

@@ -101,6 +101,15 @@ export default {
 
     return new Response("Not found", { status: 404 });
   },
+
+  // Daily (wrangler.jsonc triggers.crons): keep recurring bills on the calendar.
+  async scheduled(_event, env) {
+    const db = d1Db(env.DB);
+    const settings = await readSettings(db);
+    if (!settings) return;
+    const counts = await new Core(db, { timezone: settings.timezone, baseCurrency: settings.currency, actor: "cron" }).syncRecurring();
+    console.log("recurring sync", counts);
+  },
 } satisfies ExportedHandler<Env>;
 
 export function html(body: string, status = 200): Response {

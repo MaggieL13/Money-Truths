@@ -142,7 +142,7 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "money_record_income",
     mutating: true,
-    description: "Money the user earned or received into one of their accounts (salary, freelance, gifts). Not for reimbursements (money_record_reimbursement_received) or someone else's money passing through (money_record_pass_through).",
+    description: "Money the user earned or received into one of their accounts (salary, freelance, gifts). Only call once the user has said which account it landed in — never assume, even with a single account; ask \"Where did it land?\". Not for reimbursements (money_record_reimbursement_received) or someone else's money passing through (money_record_pass_through).",
     input: { idempotency_key: key, occurred_at: when, amount_minor: minor, currency, destination_account_id: account("Receiving"), source: z.string(), category: z.string().optional(), notes, expected_inflow_id: z.string().nullable().optional().describe("Marks this expected inflow received.") },
     run: (c, a) => c.recordIncome(a),
   }),
@@ -150,7 +150,7 @@ export const TOOLS: ToolDef[] = [
     name: "money_record_expense",
     mutating: true,
     description:
-      "A purchase/payment. payment_account_id may be a bank/cash account or a card. If someone owes part back, set reimbursable_minor + reimbursable_from_owner_id. If the paying account isn't known, omit it: a DRAFT is saved and nothing changes until money_complete_draft.",
+      "A purchase/payment. payment_account_id may be a bank/cash account or a card — only the one the user named; never assume, even with a single account. Ask \"What did you pay with?\", or leave it out to save a draft. If someone owes part back, set reimbursable_minor + reimbursable_from_owner_id. If the paying account isn't known, omit it: a DRAFT is saved and nothing changes until money_complete_draft.",
     input: { idempotency_key: key, occurred_at: when, amount_minor: minor, currency, payment_account_id: z.string().nullable().optional(), category: z.string(), description: z.string(), reimbursable_minor: z.number().int().optional(), reimbursable_from_owner_id: z.string().nullable().optional(), notes },
     run: (c, a) => c.recordExpense(a),
   }),
@@ -348,7 +348,7 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "money_upsert_recurring_rule",
     mutating: true,
-    description: "Add or edit a recurring rule (subscription, contribution, family support...). For an existing rule pass only what changes, e.g. { rule_id, active: false } to pause or cancel a subscription. New rules need name, owner_id, currency, cadence (weekly|biweekly|monthly|quarterly|yearly) and kind. Plans only — no balance changes.",
+    description: "Add or edit something that repeats: a bill (\"water, $20, every 10th\"), rent, a subscription, a loan payment, family support. New rules need name, owner_id (the user's id is me.id in the snapshot), currency, cadence (weekly|biweekly|monthly|quarterly|yearly), kind (e.g. utility, rent, subscription, loan) and, to show on the calendar, amount_minor and next_due_date (the next date it's due; later dates follow the cadence). Active bills with an amount and date automatically get their due dates through the end of next month added as obligations, refreshed daily — don't also add those with money_upsert_obligation. For an existing rule pass only what changes, e.g. { rule_id, active: false } to pause or cancel (future unpaid dates are cancelled too). Plans only — no balance changes; record the payment with money_mark_obligation_paid.",
     input: {
       idempotency_key: key,
       rule_id: z.string().nullable().optional(),

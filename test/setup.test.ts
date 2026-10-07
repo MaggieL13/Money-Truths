@@ -243,3 +243,53 @@ test("S14. an empty ledger tells the AI how to start", async () => {
   d = cardData(await loadView(core));
   assert.equal(d.empty, false, "a $0 account still counts as set up");
 });
+
+test("S15. 'today' without a time counts immediately, after a same-day opening balance", async () => {
+  const { core } = await setUp("USD");
+  // Morning in the ledger timezone: an opening balance at 09:00, then "spent this today" at 09:30.
+  const morning = new Core(core.db, { timezone: "America/Sao_Paulo", baseCurrency: "USD", now: () => new Date("2026-10-01T12:00:00.000Z") }); // 09:00 local
+  await morning.createAccount({ idempotency_key: "a", name: "Bank A", type: "bank", balance_minor: 100_000 });
+  const later = new Core(core.db, { timezone: "America/Sao_Paulo", baseCurrency: "USD", now: () => new Date("2026-10-01T12:30:00.000Z") });
+  const r = await later.recordExpense({ idempotency_key: "e", occurred_at: "2026-10-01", amount_minor: 50_000, currency: "USD", payment_account_id: "asset_bank_a", category: "fun", description: "Activities" });
+  assert.ok(!r.warnings.some((w) => /future/.test(w)), "today is never in the future");
+  assert.equal(await later.balanceOf("asset_bank_a"), 50_000, "spent today, counted now");
+  // A past date still means noon that day.
+  const { toInstant } = await import("../src/core/time.ts");
+  assert.equal(toInstant("2026-09-30", "America/Sao_Paulo", "2026-10-01T12:30:00.000Z").iso, "2026-09-30T15:00:00.000Z");
+});
+
+test("S16. repeating bills put their next due dates on the calendar, and follow the rule", async () => {
+  const { db, core } = await setUp("USD");
+  const { occurrences } = await import("../src/core/index.ts");
+  assert.deepEqual(occurrences("2026-01-31", "monthly", "2026-01-01", "2026-04-30"), ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"]);
+  assert.deepEqual(occurrences("2026-10-02", "biweekly", "2026-10-10", "2026-11-01"), ["2026-10-16", "2026-10-30"]);
+
+  // NOW = Oct 1: "water, $20, every 10th" → Oct 10 and Nov 10 (through end of next month).
+  const r = await core.upsertRecurringRule({ idempotency_key: "w", name: "Water", owner_id: "me", amount_minor: 2_000, currency: "USD", cadence: "monthly", next_due_date: "2026-10-10", kind: "utility" });
+  assert.match(r.summary, /2 upcoming due dates added/);
+  const dates = async () => (await db.all<{ due_date: string; status: string; amount_minor: number }>("SELECT due_date, status, amount_minor FROM obligations WHERE name = 'Water' ORDER BY due_date")).map((o) => `${o.due_date} ${o.status} ${o.amount_minor}`);
+  assert.deepEqual(await dates(), ["2026-10-10 planned 2000", "2026-11-10 planned 2000"]);
+  assert.deepEqual(await core.syncRecurring(), { created: 0, updated: 0, cancelled: 0 }, "running again changes nothing");
+
+  // Paying one doesn't stop the next; a price change updates future unpaid ones only.
+  await core.createAccount({ idempotency_key: "a", name: "Bank", type: "bank", balance_minor: 100_000, as_of: "2026-10-01T08:00" });
+  const oct = (await db.get<{ id: string }>("SELECT id FROM obligations WHERE name = 'Water' AND due_date = '2026-10-10'"))!.id;
+  await core.markObligationPaid({ idempotency_key: "p", obligation_id: oct, paid_at: "2026-10-01T10:00", funding_account_id: "asset_bank" });
+  const rule = r.entity!.id;
+  await core.upsertRecurringRule({ idempotency_key: "w2", rule_id: rule, amount_minor: 2_500 });
+  assert.deepEqual(await dates(), ["2026-10-10 paid 2000", "2026-11-10 planned 2500"]);
+
+  // A month later the daily run adds December.
+  const nov = new Core(db, { timezone: "America/Sao_Paulo", baseCurrency: "USD", now: () => new Date("2026-11-02T15:00:00.000Z") });
+  assert.equal((await nov.syncRecurring()).created, 1);
+  assert.deepEqual((await dates()).at(-1), "2026-12-10 planned 2500");
+
+  // Pausing cancels future unpaid dates; income rules never become bills; a hand-made bill is adopted, not duplicated.
+  await nov.upsertRecurringRule({ idempotency_key: "w3", rule_id: rule, active: false });
+  assert.deepEqual(await dates(), ["2026-10-10 paid 2000", "2026-11-10 cancelled 2500", "2026-12-10 cancelled 2500"]);
+  await core.upsertRecurringRule({ idempotency_key: "s", name: "Salary", owner_id: "me", amount_minor: 300_000, currency: "USD", cadence: "monthly", next_due_date: "2026-10-30", kind: "salary" });
+  assert.equal(await count(core, "SELECT count(*) n FROM obligations WHERE name = 'Salary'"), 0);
+  await core.upsertObligation({ idempotency_key: "rent-oct", name: "Rent", amount_minor: 90_000, currency: "USD", due_date: "2026-10-05", kind: "other", status: "planned", confidence: "confirmed" });
+  await core.upsertRecurringRule({ idempotency_key: "rent", name: "Rent", owner_id: "me", amount_minor: 90_000, currency: "USD", cadence: "monthly", next_due_date: "2026-10-05", kind: "rent" });
+  assert.equal(await count(core, "SELECT count(*) n FROM obligations WHERE name = 'Rent'"), 2, "October adopted, November added");
+});
