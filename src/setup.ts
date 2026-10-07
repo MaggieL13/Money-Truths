@@ -136,7 +136,7 @@ p{color:var(--muted)}
 .card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:18px;margin:16px 0}
 label{display:block;font-weight:600;margin:14px 0 6px}
 label small{display:block;font-weight:400;color:var(--muted);font-size:13px}
-input{width:100%;font:inherit;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--raised);color:var(--text)}
+input,select{width:100%;font:inherit;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--raised);color:var(--text)}
 button{font:inherit;font-weight:700;border:0;border-radius:999px;padding:11px 20px;background:var(--violet);color:#fff;cursor:pointer;margin-top:18px}
 button.ghost{background:var(--raised);color:var(--text);border:1px solid var(--border);margin:0;padding:6px 12px;font-size:14px}
 .err{background:var(--bad-bg);color:var(--bad);border-radius:12px;padding:10px 12px;font-weight:600}
@@ -190,21 +190,64 @@ ${error ? `<p class="err">${esc(error)}</p>` : ""}
 <input name="code" id="code" type="password" required autocomplete="off">
 <label for="name">Your name<small>Shown on your report. A nickname is fine.</small></label>
 <input name="name" id="name" required maxlength="60" value="${esc(values.name ?? "")}">
-<label for="currency">Main currency<small>3 letters: USD, EUR, GBP, MXN, BRL, CAD… Other currencies still work for single accounts.</small></label>
+<label for="currency">Main currency<small>The money you use most. Accounts in other currencies still work.</small></label>
 <input name="currency" id="currency" required maxlength="3" value="${esc(values.currency ?? "")}" placeholder="USD" style="text-transform:uppercase">
-<label for="tz">Timezone<small>Filled in from this device. Dates in your ledger follow it.</small></label>
+<label for="tz">Timezone<small id="tzhint">Already picked from this device — just check the clock looks right.</small></label>
 <input name="timezone" id="tz" required value="${esc(values.timezone ?? "")}" placeholder="America/New_York">
 <button type="submit">Create my ledger</button>
 </form>
 <script>
-const tz = document.getElementById("tz");
-if (!tz.value) try { tz.value = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (_) {}
-const cur = document.getElementById("currency");
-if (!cur.value) {
-  const region = (navigator.language || "").split("-")[1] || "";
-  const guess = { US: "USD", GB: "GBP", CA: "CAD", AU: "AUD", MX: "MXN", BR: "BRL", AR: "ARS", CL: "CLP", CO: "COP", PE: "PEN", PY: "PYG", UY: "UYU", JP: "JPY", IN: "INR", PH: "PHP", ES: "EUR", FR: "EUR", DE: "EUR", IT: "EUR", PT: "EUR", NL: "EUR", IE: "EUR", NZ: "NZD", ZA: "ZAR", SE: "SEK", NO: "NOK", DK: "DKK", PL: "PLN", CH: "CHF" }[region];
-  if (guess) cur.value = guess;
-}
+// Swap the plain text boxes for dropdowns, pre-filled from this device.
+// Without JavaScript the text boxes still work.
+(() => {
+  const swap = (input, options, chosen) => {
+    const sel = document.createElement("select");
+    sel.name = input.name; sel.id = input.id; sel.required = true;
+    for (const [value, label] of options) {
+      const o = document.createElement("option");
+      o.value = value; o.textContent = label;
+      if (value === chosen) o.selected = true;
+      sel.appendChild(o);
+    }
+    input.replaceWith(sel);
+    return sel;
+  };
+  const supported = (k) => { try { return Intl.supportedValuesOf(k); } catch (_) { return null; } };
+
+  // Timezone: every zone, labelled with its city and the time there right now.
+  const tzInput = document.getElementById("tz");
+  let here = tzInput.value;
+  if (!here) try { here = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (_) {}
+  const zones = supported("timeZone");
+  if (zones) {
+    if (here && !zones.includes(here)) zones.unshift(here);
+    const now = new Date();
+    const clock = (z) => { try { return now.toLocaleTimeString([], { timeZone: z, hour: "numeric", minute: "2-digit" }); } catch (_) { return ""; } };
+    const city = (z) => z.split("/").slice(1).join(" / ").replace(/_/g, " ") || z;
+    const sel = swap(tzInput, zones.map((z) => [z, city(z) + " (" + z.split("/")[0] + ") — " + clock(z)]), here);
+    const hint = document.getElementById("tzhint");
+    const show = () => (hint.textContent = "It's " + clock(sel.value) + " there right now. If that matches your clock, you're all set.");
+    sel.onchange = show;
+    if (here) show();
+  } else if (!tzInput.value) tzInput.value = here;
+
+  // Currency: common ones first, by name; then every other currency.
+  const curInput = document.getElementById("currency");
+  let mine = curInput.value;
+  if (!mine) {
+    const region = (navigator.language || "").split("-")[1] || "";
+    mine = { US: "USD", GB: "GBP", CA: "CAD", AU: "AUD", MX: "MXN", BR: "BRL", AR: "ARS", CL: "CLP", CO: "COP", PE: "PEN", PY: "PYG", UY: "UYU", BO: "BOB", VE: "VES", JP: "JPY", KR: "KRW", IN: "INR", PH: "PHP", ES: "EUR", FR: "EUR", DE: "EUR", IT: "EUR", PT: "EUR", NL: "EUR", IE: "EUR", BE: "EUR", AT: "EUR", FI: "EUR", NZ: "NZD", ZA: "ZAR", SE: "SEK", NO: "NOK", DK: "DKK", PL: "PLN", CH: "CHF" }[region] || "USD";
+  }
+  const all = supported("currency");
+  if (all) {
+    let names = null;
+    try { names = new Intl.DisplayNames(["en"], { type: "currency" }); } catch (_) {}
+    const label = (c) => (names ? names.of(c) + " (" + c + ")" : c);
+    const common = ["USD", "EUR", "GBP", "CAD", "AUD", "MXN", "BRL", "ARS", "CLP", "COP", "PEN", "PYG", "UYU", "JPY", "INR", "PHP"].filter((c) => all.includes(c));
+    const rest = all.filter((c) => !common.includes(c));
+    swap(curInput, [...common, ...rest].map((c) => [c, label(c)]), mine);
+  } else if (!curInput.value) curInput.value = mine;
+})();
 </script>`,
   );
 }
