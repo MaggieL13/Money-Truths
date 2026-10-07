@@ -307,6 +307,30 @@ document.querySelectorAll("[data-copy]").forEach((b) => b.onclick = async () => 
   );
 }
 
+/** Shown when the AI connector link is opened in a browser. */
+export function connectorHelpPage(link: string, readOnly: boolean): string {
+  return page(
+    "Your AI connector link",
+    `<h1>This link is for your AI 🤖</h1>
+<p>It isn't a web page — it's the private door Claude or ChatGPT uses to read${readOnly ? "" : " and update"} your ledger. Opening it here does nothing, and that's fine.</p>
+<div class="card">
+<label>Paste this into your AI<small>Keep it private, like a password.</small></label>
+<div class="link"><code id="mcp">${esc(link)}</code><button class="ghost" type="button" id="copy">Copy</button></div>
+<ol>
+<li><b>Claude</b>: Settings → Connectors → Add custom connector → paste it.</li>
+<li><b>ChatGPT</b>: Settings → Apps &amp; Connectors → Advanced → Developer mode on → Create → paste it (no authentication).</li>
+<li>Then start a new chat and say <i>“Let's set up my Money Truths.”</i></li>
+</ol>
+${readOnly ? `<p>This is your <b>read-only</b> link, so your AI will only be able to look. For an AI that can record things, use your full-access link.</p>` : ""}
+</div>
+<script>
+document.getElementById("copy").onclick = async (e) => {
+  try { await navigator.clipboard.writeText(document.getElementById("mcp").textContent); e.target.textContent = "Copied ✓"; } catch (_) { e.target.textContent = "Select & copy"; }
+};
+</script>`,
+  );
+}
+
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }

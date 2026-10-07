@@ -53,6 +53,11 @@ export default {
       const core = (surface: string) => new Core(db, { timezone: settings.timezone, baseCurrency: settings.currency, actor: actorFor(surface) });
 
       if (auth.path === "/mcp") {
+        // Someone opened the AI link in a browser: explain instead of showing a protocol error.
+        if (request.method === "GET" && (request.headers.get("accept") ?? "").includes("text/html")) {
+          const { connectorHelpPage } = await import("./setup.ts");
+          return html(connectorHelpPage(url.href, readOnly));
+        }
         // Stateless: one server instance per request, closing over this request's bindings.
         const handler = createMcpHandler(() => buildMcpServer(core("mcp"), { readOnly, buildSha: env.BUILD_SHA }), {
           route: auth.mcpRoute,
